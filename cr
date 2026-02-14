@@ -245,7 +245,7 @@ SELECTED=$(echo "$SESSION_LIST" | \
         --pointer="▶" \
         --marker="●" \
         --color="header:bold:cyan,pointer:yellow,prompt:yellow,border:blue,label:blue:bold" \
-        --bind="j:down,k:up" \
+        --bind="ctrl-j:down,ctrl-k:up" \
     || true)
 
 if [[ -z "$SELECTED" ]]; then

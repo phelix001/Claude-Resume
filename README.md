@@ -94,7 +94,7 @@ cr 10
 | `Enter` | Resume the selected session |
 | `ESC` / `Ctrl-C` | Cancel and start a new Claude session |
 | Type | Fuzzy search across all sessions |
-| `j` / `k` | Navigate up/down (vim-style) |
+| `Ctrl-j` / `Ctrl-k` | Navigate up/down |
 
 ## Configuration
 
