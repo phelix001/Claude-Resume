@@ -12,17 +12,9 @@ Claude Code stores conversation sessions as `.jsonl` files scattered across `~/.
 
 `cr` gives you a searchable, previewable list of all your recent Claude Code sessions:
 
-```
-  cr — Claude Resume Picker
-  ──────────────────────────────────────────────────────────
-  ENTER: resume  |  ESC/ctrl-c: new session  |  type to search
-  ──────────────────────────────────────────────────────────
-   #   AGO  MSGS  PROJECT                SUMMARY
-  1   23m   47msg  ~/myproject             Fix auth bug in login flow
-  2    1h   12msg  ~/api-server            Add rate limiting to endpoints
-  3    3h   89msg  ~/frontend              Refactor component state mgmt…
-  4    1d    8msg  ~/scripts               Write deployment automation
-```
+<p align="center">
+  <img src="demo.svg" alt="cr demo — interactive session picker with preview pane" width="960"/>
+</p>
 
 Select a session and you're back in it. Press `ESC` to start a fresh session instead.
 

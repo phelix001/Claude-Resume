@@ -195,6 +195,9 @@ for i, s in enumerate(sessions):
 
     line = f"{i+1:>3}  {ago(mod):>4}  {msgs:>3}msg  {proj_short:<22}  {label}"
 
+    # Keep raw project path for cd-before-resume
+    proj_raw = s.get("projectPath", "") or ""
+
     detail = (
         f"\\033[1;36m━━━ Session Details ━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n"
         f"\\n"
@@ -212,7 +215,7 @@ for i, s in enumerate(sessions):
     )
 
     Path(tmpdir, sid).write_text(detail)
-    print(f"{line}\t{sid}")
+    print(f"{line}\t{sid}\t{proj_raw}")
 PYEOF
 )
 
@@ -254,11 +257,17 @@ if [[ -z "$SELECTED" ]]; then
 fi
 
 SESSION_ID=$(echo "$SELECTED" | awk -F$'\t' '{print $2}')
+PROJECT_DIR=$(echo "$SELECTED" | awk -F$'\t' '{print $3}')
 
 if [[ -z "$SESSION_ID" ]]; then
     echo "Starting new Claude session..."
     exec claude
 fi
 
-echo "Resuming session $SESSION_ID..."
+# cd to the project directory so claude resumes in the right context
+if [[ -n "$PROJECT_DIR" && -d "$PROJECT_DIR" ]]; then
+    cd "$PROJECT_DIR"
+fi
+
+echo "Resuming session $SESSION_ID in ${PROJECT_DIR:-$(pwd)}..."
 exec claude --resume "$SESSION_ID"
