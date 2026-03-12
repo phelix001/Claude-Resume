@@ -22,21 +22,67 @@ if [[ ! -x "$FZF_BIN" ]]; then
     exit 1
 fi
 
+# Source API key for Haiku summaries
+[[ -f "$HOME/.anthropic_env" ]] && source "$HOME/.anthropic_env"
+
 CR_TMPDIR=$(mktemp -d /tmp/cr.XXXXXX)
 trap 'rm -rf "$CR_TMPDIR"' EXIT
 
 SESSION_LIST=$(python3 - "$CR_MAX" "$CR_TMPDIR" << 'PYEOF'
-import json, os, re, sys
+import json, os, re, sys, subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 claude_dir = Path.home() / ".claude" / "projects"
 max_sessions = int(sys.argv[1])
 tmpdir = sys.argv[2]
 home = str(Path.home())
 
+# ── Summary cache ─────────────────────────────────────────────────
+CACHE_DIR = Path.home() / ".claude" / "cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_FILE = CACHE_DIR / "cr-summaries.json"
+
+try:
+    summary_cache = json.loads(CACHE_FILE.read_text())
+except (FileNotFoundError, json.JSONDecodeError):
+    summary_cache = {}
+
+def save_cache():
+    CACHE_FILE.write_text(json.dumps(summary_cache))
+
+# Load API key
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+if not API_KEY:
+    env_file = Path.home() / ".anthropic_env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if "ANTHROPIC_API_KEY" in line:
+                API_KEY = line.split("=", 1)[1].strip().strip('"').strip("'")
+
+def generate_summary(sid, prompt_text):
+    """Call Haiku to generate a short summary from the first prompt."""
+    if not API_KEY or not prompt_text or prompt_text == "(no prompt)":
+        return sid, ""
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=API_KEY)
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=30,
+            messages=[{"role": "user", "content":
+                f"Summarize this Claude Code session prompt in 3-8 words. "
+                f"No punctuation. No quotes. Just the topic.\n\n{prompt_text[:500]}"}],
+        )
+        text = resp.content[0].text.strip().rstrip(".")
+        return sid, text
+    except Exception:
+        return sid, ""
+
 sessions = []
 seen_sids = set()
+index_data = {}   # sid -> index entry (for summary lookup)
 
 # ── Phase 1: indexed sessions (fast) ───────────────────────────────
 for index_file in claude_dir.glob("*/sessions-index.json"):
@@ -48,15 +94,14 @@ for index_file in claude_dir.glob("*/sessions-index.json"):
             sid = entry.get("sessionId", "")
             if sid:
                 seen_sids.add(sid)
+                index_data[sid] = entry
             sessions.append(entry)
     except (json.JSONDecodeError, IOError):
         continue
 
-# ── Phase 2: unindexed .jsonl files ────────────────────────────────
+# ── Phase 2: all .jsonl files not already in an index ──────────────
 for proj_dir in claude_dir.iterdir():
     if not proj_dir.is_dir():
-        continue
-    if (proj_dir / "sessions-index.json").exists():
         continue
 
     for jf in sorted(proj_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True):
@@ -146,7 +191,35 @@ sessions = [s for s in sessions
 
 sessions.sort(key=parse_date, reverse=True)
 sessions = sessions[:max_sessions]
-now = datetime.now(timezone.utc)
+now = datetime.now().astimezone()
+
+# ── Generate missing summaries with Haiku ─────────────────────────
+# Apply cached summaries first
+for s in sessions:
+    sid = s.get("sessionId", "")
+    if not s.get("summary") and sid in summary_cache:
+        s["summary"] = summary_cache[sid]
+
+# Find sessions still needing summaries
+needs_summary = []
+for s in sessions:
+    sid = s.get("sessionId", "")
+    if not s.get("summary") and sid and s.get("firstPrompt"):
+        needs_summary.append(s)
+
+if needs_summary and API_KEY:
+    print(f"Generating {len(needs_summary)} summaries...", file=sys.stderr, flush=True)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {
+            pool.submit(generate_summary, s["sessionId"], s.get("firstPrompt", "")): s
+            for s in needs_summary
+        }
+        for fut in as_completed(futures):
+            sid, text = fut.result()
+            if text:
+                summary_cache[sid] = text
+                futures[fut]["summary"] = text
+    save_cache()
 
 def clean(text):
     """Clean up prompt text for display."""
@@ -165,14 +238,17 @@ def clean(text):
     return text[:200] if text else "(no prompt)"
 
 def ago(mod):
-    d = now - mod
-    if d.days > 365: return f"{d.days // 365}y"
-    if d.days > 30:  return f"{d.days // 30}mo"
-    if d.days > 0:   return f"{d.days}d"
-    h = d.seconds // 3600
-    if h > 0: return f"{h}h"
-    m = d.seconds // 60
-    return f"{m}m" if m > 0 else "now"
+    secs = int((now - mod).total_seconds())
+    if secs < 0: return "now"
+    if secs < 60: return "now"
+    m = secs // 60
+    if m < 60: return f"{m}m"
+    h = secs // 3600
+    if h < 24: return f"{h}h"
+    d = secs // 86400
+    if d < 30: return f"{d}d"
+    if d < 365: return f"{d // 30}mo"
+    return f"{d // 365}y"
 
 for i, s in enumerate(sessions):
     sid     = s.get("sessionId", "")
@@ -181,14 +257,17 @@ for i, s in enumerate(sessions):
     msgs    = s.get("messageCount", 0)
     proj    = s.get("projectPath", "")
     branch  = s.get("gitBranch", "")
-    mod     = parse_date(s)
+    mod     = parse_date(s).astimezone()
     mod_str = mod.strftime("%b %d %I:%M%p")
 
     if proj.startswith(home):
         proj = "~" + proj[len(home):]
     proj = proj or "~"
 
+    # Use summary from index when available, otherwise fall back to first prompt
     label = summary if summary else prompt
+    # Also use first prompt as summary in preview when no real summary exists
+    display_summary = summary if summary else prompt
     if len(label) > 55:
         label = label[:55] + "…"
     proj_short = proj if len(proj) <= 22 else "…" + proj[-21:]
@@ -202,7 +281,7 @@ for i, s in enumerate(sessions):
         f"\\033[1;36m━━━ Session Details ━━━━━━━━━━━━━━━━━━━━━━━━━\\033[0m\\n"
         f"\\n"
         f"\\033[1;33mSummary\\033[0m\\n"
-        f"  {summary or '(none)'}\\n"
+        f"  {display_summary}\\n"
         f"\\n"
         f"\\033[1;33mFirst Message\\033[0m\\n"
         f"  {prompt}\\n"
