@@ -294,7 +294,9 @@ for i, s in enumerate(sessions):
     )
 
     Path(tmpdir, sid).write_text(detail)
-    print(f"{line}\t{sid}\t{proj_raw}")
+    # Field 4: full searchable text (summary + prompt + branch + project) hidden from display
+    search_blob = f"{summary} {prompt} {branch} {proj}".replace("\t", " ")
+    print(f"{line}\t{sid}\t{proj_raw}\t{search_blob}")
 PYEOF
 )
 
